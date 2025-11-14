@@ -1,7 +1,8 @@
-# combined_inventory_demand_mcp_v7.py
+# combined_inventory_demand_mcp_v8.py
 # ---------------------------------------
 # MCP Agent for Inventory Data + Demand Forecast
-# Optimized: Exact Inventory_ID match + Fuzzy Name matching
+# Optimized: Exact Inventory_ID match + Fuzzy Name matching (historical + master)
+# Fix: Stock tool 500-error fix for min_stock/closing_stock
 # ---------------------------------------
 
 import psycopg2
@@ -20,7 +21,7 @@ mcp = FastMCP("Inventory & Demand MCP 📦🧠")
 # PostgreSQL setup
 # ----------------------------
 conn = psycopg2.connect(
-   
+ 
 )
 cur = conn.cursor()
 
@@ -28,13 +29,55 @@ cur = conn.cursor()
 # Load historical dataset for demand forecasting
 # ----------------------------
 historical_df = pd.read_csv("models/demand_forecast_base.csv", parse_dates=['Date'])
+historical_df['Inventory_ID'] = historical_df['Inventory_ID'].astype(str)
 
 # ----------------------------
-# Precompute cleaned historical names & inventory IDs
+# Load inventory_master names from DB (used for fuzzy matching on stock queries)
 # ----------------------------
-historical_names_clean = [str(n).replace('\xa0', ' ').strip().lower() for n in historical_df['Item_Name']]
-historical_name_to_id = dict(zip(historical_names_clean, historical_df['Inventory_ID']))
+def load_inventory_master_names():
+    cur.execute("SELECT inventory_id, item_name FROM inventory_master")
+    rows = cur.fetchall()
+    master_map = {}
+    for r in rows:
+        inv_id = str(r[0]).strip()
+        name = r[1] or ""
+        master_map[name] = inv_id
+    return master_map
+
+inventory_master_map = load_inventory_master_names()
+
+# ----------------------------
+# Normalization utilities and precompute cleaned name maps
+# ----------------------------
+def normalize_text(s: str):
+    if not s:
+        return ""
+    s = str(s)
+    s = s.replace('\xa0', ' ')
+    s = s.lower()
+    s = re.sub(r'\s+', ' ', s)
+    s = re.sub(r'[^\w\s]', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
+
+historical_names_clean = [normalize_text(n) for n in historical_df['Item_Name'].fillna("").astype(str)]
+historical_name_to_id = dict(zip(historical_names_clean, historical_df['Inventory_ID'].astype(str)))
+
+master_names_clean = [normalize_text(n) for n in inventory_master_map.keys()]
+master_name_to_id = {normalize_text(k): v for k, v in inventory_master_map.items()}
+
+combined_names_clean = []
+combined_name_to_id = {}
+for name in master_name_to_id:
+    combined_names_clean.append(name)
+    combined_name_to_id[name] = master_name_to_id[name]
+for name, inv_id in historical_name_to_id.items():
+    if name not in combined_name_to_id:
+        combined_names_clean.append(name)
+        combined_name_to_id[name] = str(inv_id)
+
 inventory_ids_set = set(historical_df['Inventory_ID'].astype(str))
+inventory_ids_set.update({str(v) for v in inventory_master_map.values()})
 
 # ----------------------------
 # Load trained XGBoost model
@@ -61,36 +104,33 @@ def extract_periods_from_query(query: str, default: int = 7) -> int:
     return default
 
 def resolve_inventory_ids(input_str: str):
-    """
-    Resolve input string to Inventory IDs.
-    1️⃣ Exact Inventory_ID match
-    2️⃣ Exact Name match
-    3️⃣ Fuzzy Name match
-    Returns: List of (Inventory_ID, Search_Method)
-    """
-    input_clean = clean_text(input_str.strip().lower())
+    if not input_str:
+        return []
 
-    # 1️⃣ Exact Inventory_ID match
-    if input_str.strip().upper() in inventory_ids_set:
-        return [(input_str.strip().upper(), "Exact Inventory_ID")]
+    raw = str(input_str).strip()
+    input_upper = raw.upper()
+    input_clean = normalize_text(raw)
 
-    # 2️⃣ Exact Name match
+    if input_upper in inventory_ids_set:
+        return [(input_upper, "Exact Inventory_ID")]
+
     if input_clean in historical_name_to_id:
-        return [(historical_name_to_id[input_clean], "Exact Name (historical)")]
+        return [(str(historical_name_to_id[input_clean]), "Exact Name (historical)")]
+    if input_clean in master_name_to_id:
+        return [(str(master_name_to_id[input_clean]), "Exact Name (master)")]
 
-    # 3️⃣ Fuzzy Name match
-    match = process.extractOne(input_clean, historical_names_clean, scorer=fuzz.token_sort_ratio)
-    if match:
-        match_name, score, idx = match
-        if score >= 60:
-            inv_id = historical_df.iloc[idx]['Inventory_ID']
-            return [(inv_id, f"Fuzzy Name (score={score}, historical)")]
-
-    # Not found
+    if input_clean:
+        match = process.extractOne(input_clean, combined_names_clean, scorer=fuzz.token_sort_ratio)
+        if match:
+            match_name, score = match
+            if score >= 55:
+                inv_id = combined_name_to_id.get(match_name)
+                source = "Fuzzy Name (master)" if match_name in master_name_to_id else "Fuzzy Name (historical)"
+                return [(str(inv_id), f"{source} (score={score})")]
     return []
 
 def forecast_item(item_id: str, periods: int = 7, method: str = "Unknown"):
-    df_item = historical_df[historical_df['Inventory_ID'] == item_id].sort_values('Date').copy()
+    df_item = historical_df[historical_df['Inventory_ID'] == str(item_id)].sort_values('Date').copy()
     if df_item.empty:
         return [{"Date": None, "Inventory_ID": item_id, "Predicted_Consumption": 0,
                  "Available_Stock": 0, "Stock_Warning": True, "Search_Method": method,
@@ -107,29 +147,35 @@ def forecast_item(item_id: str, periods: int = 7, method: str = "Unknown"):
     available_stock = last_row['Closing_Stock']
     min_stock_limit = float(last_row.get('min_stock_limit', 10))
 
-    # Initialize lag columns
     for lag in range(1, 8):
         last_row[f'lag_{lag}'] = last_row.get(f'lag_{lag}', 0.0)
 
     for day in range(periods):
-        feat = {'Opening_Stock': float(available_stock),
-                'Closing_Stock': float(available_stock),
-                'Quantity_Restocked': 0.0,
-                'Lead_Time_Days': float(last_row.get('Lead_Time_Days', 3)),
-                'lead_time_days': float(last_row.get('lead_time_days', 3)),
-                'min_stock_limit': min_stock_limit,
-                'max_capacity': float(last_row.get('max_capacity', 500)),
-                'day_of_week': int((last_row['Date'].dayofweek + day + 1) % 7),
-                'month': int((last_row['Date'] + pd.Timedelta(days=day + 1)).month)}
+        feat = {
+            'Opening_Stock': float(available_stock),
+            'Closing_Stock': float(available_stock),
+            'Quantity_Restocked': float(last_row.get('Quantity_Restocked', 0.0)),
+            'Lead_Time_Days': float(last_row.get('Lead_Time_Days', last_row.get('lead_time_days', 3))),
+            'lead_time_days': float(last_row.get('lead_time_days', last_row.get('Lead_Time_Days', 3))),
+            'min_stock_limit': float(last_row.get('min_stock_limit', min_stock_limit)),
+            'max_capacity': float(last_row.get('max_capacity', 500)),
+            'day_of_week': int((last_row['Date'].dayofweek + day + 1) % 7) if 'Date' in last_row and pd.notna(last_row['Date']) else 0,
+            'month': int((last_row['Date'] + pd.Timedelta(days=day + 1)).month) if 'Date' in last_row and pd.notna(last_row['Date']) else 1
+        }
 
         for lag in range(1, 8):
             feat[f'lag_{lag}'] = float(last_row.get(f'lag_{lag}', 0.0))
 
         X_pred = pd.DataFrame([feat])
-        y_pred = float(max(0, xgb_model.predict(X_pred)[0]))
+        try:
+            y_pred_raw = xgb_model.predict(X_pred)[0]
+            y_pred = float(max(0.0, y_pred_raw))
+        except Exception:
+            y_pred = 0.0
+
         stock_warning = (available_stock - y_pred) < min_stock_limit
 
-        preds.append({'Date': (last_row['Date'] + pd.Timedelta(days=day + 1)).strftime("%Y-%m-%d"),
+        preds.append({'Date': (last_row['Date'] + pd.Timedelta(days=day + 1)).strftime("%Y-%m-%d") if 'Date' in last_row and pd.notna(last_row['Date']) else None,
                       'Inventory_ID': str(item_id),
                       'Predicted_Consumption': round(y_pred, 2),
                       'Available_Stock': round(float(available_stock), 2),
@@ -137,7 +183,7 @@ def forecast_item(item_id: str, periods: int = 7, method: str = "Unknown"):
                       'Search_Method': method})
 
         for lag in range(7, 1, -1):
-            last_row[f'lag_{lag}'] = last_row[f'lag_{lag-1}']
+            last_row[f'lag_{lag}'] = last_row.get(f'lag_{lag-1}', 0.0)
         last_row['lag_1'] = y_pred
         available_stock = max(0.0, available_stock - y_pred)
         last_row['Closing_Stock'] = available_stock
@@ -145,7 +191,7 @@ def forecast_item(item_id: str, periods: int = 7, method: str = "Unknown"):
     return preds
 
 def fetch_inventory_data(inventory_id: str):
-    inventory_id_clean = inventory_id.strip().upper()
+    inventory_id_clean = str(inventory_id).strip().upper()
     data = {}
 
     def execute_and_format(query, params, limit=None):
@@ -165,7 +211,7 @@ def fetch_inventory_data(inventory_id: str):
     data["Consumption"] = execute_and_format("""SELECT * FROM consumption WHERE inventory_id=%s ORDER BY date DESC""", (inventory_id_clean,), limit=7)
     data["Finance"] = execute_and_format("""SELECT * FROM finance WHERE inventory_id=%s ORDER BY purchase_date DESC""", (inventory_id_clean,), limit=5)
     data["Department_Mapping"] = execute_and_format("""SELECT * FROM inventory_department_mapping WHERE inventory_id=%s""", (inventory_id_clean,))
-    
+
     vendor_id = master_data.get("vendor_id")
     if vendor_id:
         data["Vendor"] = execute_and_format("""SELECT * FROM vendor_master WHERE vendor_id=%s""", (vendor_id,), limit=1)
@@ -181,7 +227,13 @@ def fetch_inventory_data(inventory_id: str):
 def get_inventory_details(inventory_id: str):
     if not inventory_id:
         return {"error": "Inventory_ID is required"}
-    return fetch_inventory_data(inventory_id)
+
+    resolved = resolve_inventory_ids(inventory_id)
+    if not resolved:
+        try_id = str(inventory_id).strip().upper()
+        return fetch_inventory_data(try_id)
+    inv_id, method = resolved[0]
+    return fetch_inventory_data(inv_id)
 
 @mcp.tool
 def predict_demand(Input: str):
@@ -198,38 +250,42 @@ def predict_demand(Input: str):
 @mcp.tool
 def check_stock(inventory_id_or_name: str):
     """
-    Minimal stock tool: supports Inventory_ID or item name (fuzzy match).
+    Returns current stock, min stock limit, stock warning, last 7-day consumption
+    Safe defaults applied to prevent 500 errors.
     """
     if not inventory_id_or_name:
         return {"error": "Inventory_ID or name is required"}
 
-    # 1️⃣ Try exact ID
-    inv_id = inventory_id_or_name.strip().upper()
-    if inv_id in inventory_ids_set:
+    inv_id_candidate = str(inventory_id_or_name).strip().upper()
+    if inv_id_candidate in inventory_ids_set:
+        inv_id = inv_id_candidate
         method = "Exact Inventory_ID"
     else:
-        # 2️⃣ Exact name match
-        input_clean = clean_text(inventory_id_or_name.strip().lower())
+        input_clean = normalize_text(inventory_id_or_name.strip())
         if input_clean in historical_name_to_id:
-            inv_id = historical_name_to_id[input_clean]
+            inv_id = str(historical_name_to_id[input_clean])
             method = "Exact Name (historical)"
+        elif input_clean in master_name_to_id:
+            inv_id = str(master_name_to_id[input_clean])
+            method = "Exact Name (master)"
         else:
-            # 3️⃣ Fuzzy match safely (without unpacking index)
-            match_name, score = process.extractOne(input_clean, historical_names_clean, scorer=fuzz.token_sort_ratio)
-            if score >= 60:
-                inv_id = historical_name_to_id.get(match_name)
+            match = process.extractOne(input_clean, combined_names_clean, scorer=fuzz.token_sort_ratio)
+            if not match:
+                return {"error": f"Inventory '{inventory_id_or_name}' not found"}
+            match_name, score = match
+            if score >= 55:
+                inv_id = combined_name_to_id.get(match_name)
                 method = f"Fuzzy Name (score={score})"
             else:
-                return {"error": f"Inventory '{inventory_id_or_name}' not found"}
+                return {"error": f"Inventory '{inventory_id_or_name}' not found (best_score={score})"}
 
-    # Fetch data
     data = fetch_inventory_data(inv_id)
     if "error" in data:
         return data
 
     master = data["Inventory_Master"]
-    closing_stock = master.get("closing_stock", 0)
-    min_stock_limit = master.get("min_stock_limit", 10)
+    closing_stock = float(master.get("closing_stock", master.get("Closing_Stock", 0) or 0))
+    min_stock_limit = float(master.get("min_stock_limit", master.get("Min_Stock", 10) or 10))
     stock_warning = closing_stock < min_stock_limit
     last_consumption = data.get("Consumption", [])
 
@@ -240,32 +296,6 @@ def check_stock(inventory_id_or_name: str):
         "Min_Stock_Limit": min_stock_limit,
         "Stock_Warning": stock_warning,
         "Search_Method": method,
-        "Last_Consumption_7_Days": last_consumption
-    }
-
-    """
-    Minimal stock tool: returns current stock, min stock, low stock warning, and last consumption.
-    """
-    if not inventory_id:
-        return {"error": "Inventory_ID is required"}
-    
-    data = fetch_inventory_data(inventory_id)
-    if "error" in data:
-        return data
-    
-    master = data["Inventory_Master"]
-    closing_stock = master.get("closing_stock", 0)
-    min_stock_limit = master.get("min_stock_limit", 10)
-    stock_warning = closing_stock < min_stock_limit
-    
-    last_consumption = data.get("Consumption", [])
-    
-    return {
-        "Inventory_ID": inventory_id,
-        "Item_Name": master.get("item_name"),
-        "Closing_Stock": closing_stock,
-        "Min_Stock_Limit": min_stock_limit,
-        "Stock_Warning": stock_warning,
         "Last_Consumption_7_Days": last_consumption
     }
 
