@@ -17,6 +17,11 @@ function Dashboard() {
   const [newItem, setNewItem] = useState({ name: '', category: '', quantity: '', threshold: '' })
   const [showAddForm, setShowAddForm] = useState(false)
 
+  // iGentic / agent response state
+  const [agentResponse, setAgentResponse] = useState(null)
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [agentError, setAgentError] = useState(null)
+
   // Fetch real inventory data
   useEffect(() => {
     fetch("http://127.0.0.1:8080/api/inventory")
@@ -28,7 +33,8 @@ function Dashboard() {
             name: item.item_name,
             category: item.item_type || 'Unknown',
             quantity: item.initial_stock || 0,
-            threshold: item.minimum_required || 0
+            threshold: item.minimum_required || 0,
+            raw: item
           }))
           setInventory(formatted)
         }
@@ -121,21 +127,130 @@ function Dashboard() {
 
   const categories = [...new Set(inventory.map(item => item.category))]
 
+  // -------------------------
+  // iGentic integration
+  // -------------------------
+  const IGENTIC_ORCHESTRATOR_ID = "df6578f6-7485-4946-85d3-0c6c1fb9114e"
+  const IGENTIC_ENDPOINT_BASE = "https://container-hackathon-sk.salmonpebble-59bd07ab.eastus.azurecontainerapps.io/api/iGenticAutonomousAgent/Executor"
+  const IGENTIC_URL = `${IGENTIC_ENDPOINT_BASE}/${IGENTIC_ORCHESTRATOR_ID}`
+
+  const IGENTIC_HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer YOUR_IGENTIC_TOKEN"
+  }
+
+async function sendToAgent(item) {
+  if (!item) return
+  setAgentLoading(true)
+  setAgentError(null)
+  setAgentResponse(null)
+
+  try {
+    const userInputPayload = {
+      item_id: item.id,
+      item_name: item.name,
+      forecast_output: [],
+      threshold_status: {
+        flag_below_min: item.quantity <= item.threshold,
+        reorder_level: item.threshold,
+        reason: item.quantity <= item.threshold ? "Below minimum" : "Stock OK"
+      },
+      stock_info: {
+        Closing_Stock: item.quantity,
+        Min_Stock_Limit: item.threshold,
+        Vendor: { vendor_name: (item.raw && item.raw.vendor_name) ? item.raw.vendor_name : "Vendor_ABC" }
+      },
+      prompt: `Generate a detailed forecast report for ${item.name}, including consumption trends, low-stock warnings, and recommended actions.`
+    }
+
+    const payload = {
+      UserInput: JSON.stringify(userInputPayload),
+      sessionId: localStorage.getItem("igentic_session") || "",
+      executionId: crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString() + Math.random().toString()),
+      connectionID: "react-frontend",
+      isImage: false,
+      base64string: "",
+      evalId: "",
+      userInputType: ""
+    }
+
+    const res = await fetch(IGENTIC_URL, {
+      method: "POST",
+      headers: IGENTIC_HEADERS,
+      body: JSON.stringify(payload)
+    })
+
+    if (!res.ok) {
+      const txt = await res.text()
+      throw new Error(`iGentic API error: ${res.status} ${txt}`)
+    }
+
+    const data = await res.json()
+    if (data.session_id) localStorage.setItem("igentic_session", data.session_id)
+    setAgentResponse(data)
+
+  } catch (err) {
+    console.error(err)
+    setAgentError(err.message || String(err))
+  } finally {
+    setAgentLoading(false)
+  }
+}
+
   return (
     <div className="dashboard-page">
+
+      {/* iGentic Response Panel at the top */}
+      <div className="agent-response-panel">
+        <h3 className="section-title">iGentic Agent Response</h3>
+        {agentError && <div className="agent-error">Error: {agentError}</div>}
+        {agentLoading && <div className="agent-loading">Waiting for agent response...</div>}
+        {agentResponse && (
+          <div className="agent-response-card">
+            <pre>
+              {agentResponse.result || JSON.stringify(agentResponse, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
+
       <div className="page-header" style={{ marginBottom: '1rem' }}>
         <h1 className="page-title">Dashboard</h1>
-        {/* Dropdown to select inventory item */}
-        <select
-          value={selectedItemId}
-          onChange={(e) => setSelectedItemId(e.target.value)}
-          style={{ marginTop: '1rem', padding: '0.5rem' }}
-        >
-          <option value="">-- Select Inventory Item --</option>
-          {inventory.map(item => (
-            <option key={item.id} value={item.id}>{item.name}</option>
-          ))}
-        </select>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <select
+            value={selectedItemId}
+            onChange={e => setSelectedItemId(e.target.value)}
+            style={{ marginTop: '1rem', padding: '0.5rem' }}
+          >
+            <option value="">-- Select Inventory Item --</option>
+            {inventory.map(item => (
+              <option key={item.id} value={item.id}>{item.name}</option>
+            ))}
+          </select>
+
+          <button
+            onClick={() => {
+              const item = inventory.find(i => i.id === selectedItemId)
+              if (item) sendToAgent(item)
+            }}
+            style={{ padding: "0.5rem", marginTop: '1rem' }}
+            disabled={!selectedItemId || agentLoading}
+          >
+            {agentLoading ? 'Sending...' : 'Send to iGentic'}
+          </button>
+
+          <button
+            onClick={() => {
+              setAgentResponse(null)
+              setAgentError(null)
+              localStorage.removeItem("igentic_session")
+            }}
+            style={{ padding: "0.5rem", marginTop: '1rem' }}
+          >
+            Reset iGentic Session
+          </button>
+        </div>
       </div>
 
       <StatsGrid stats={stats} />
@@ -162,7 +277,19 @@ function Dashboard() {
             newItem={newItem}
             setNewItem={setNewItem}
             categories={categories}
-            handleAddItem={() => {}}
+            handleAddItem={() => {
+              const nextId = `INV${(Math.random()*100000).toFixed(0)}`
+              const created = {
+                id: nextId,
+                name: newItem.name || 'New Item',
+                category: newItem.category || 'Unknown',
+                quantity: parseInt(newItem.quantity) || 0,
+                threshold: parseInt(newItem.threshold) || 0
+              }
+              setInventory([created, ...inventory])
+              setShowAddForm(false)
+              setNewItem({ name: '', category: '', quantity: '', threshold: '' })
+            }}
           />
         )}
 
@@ -176,7 +303,7 @@ function Dashboard() {
           handleEdit={handleEdit}
           handleSaveEdit={handleSaveEdit}
           handleCancelEdit={handleCancelEdit}
-          handleDelete={() => {}}
+          handleDelete={id => setInventory(inventory.filter(it => it.id !== id))}
         />
       </div>
     </div>
@@ -184,3 +311,5 @@ function Dashboard() {
 }
 
 export default Dashboard
+
+

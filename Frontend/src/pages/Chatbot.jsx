@@ -4,19 +4,6 @@ import MessageList from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import './Chatbot.css'
 
-const inventoryData = [
-  { id: 1, name: 'Paracetamol 500mg', category: 'Pain Relief', quantity: 150, threshold: 50 },
-  { id: 2, name: 'Ibuprofen 400mg', category: 'Pain Relief', quantity: 25, threshold: 50 },
-  { id: 3, name: 'Amoxicillin 250mg', category: 'Antibiotics', quantity: 0, threshold: 30 },
-  { id: 4, name: 'Aspirin 100mg', category: 'Pain Relief', quantity: 200, threshold: 50 },
-  { id: 5, name: 'Insulin Vial', category: 'Diabetes', quantity: 45, threshold: 40 },
-  { id: 6, name: 'Bandages', category: 'First Aid', quantity: 300, threshold: 100 },
-  { id: 7, name: 'Gauze Pads', category: 'First Aid', quantity: 15, threshold: 50 },
-  { id: 8, name: 'Antiseptic Solution', category: 'First Aid', quantity: 80, threshold: 50 },
-  { id: 9, name: 'Metformin 500mg', category: 'Diabetes', quantity: 120, threshold: 50 },
-  { id: 10, name: 'Ciprofloxacin 500mg', category: 'Antibiotics', quantity: 60, threshold: 50 },
-]
-
 function Chatbot() {
   const [messages, setMessages] = useState([
     {
@@ -29,6 +16,7 @@ function Chatbot() {
   const [inputText, setInputText] = useState('')
   const [isListening, setIsListening] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [agentError, setAgentError] = useState(null)
   const messagesEndRef = useRef(null)
   const recognitionRef = useRef(null)
 
@@ -36,98 +24,88 @@ function Chatbot() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const getStockStatus = (item) => {
-    if (item.quantity === 0) return 'out of stock'
-    if (item.quantity <= item.threshold) return 'low stock'
-    return 'in stock'
+  // -------------------------
+  // iGentic config
+  // -------------------------
+  const AGENT_ID = "f800f4c2-eb25-467c-942b-b81de85e2f1c"
+  const IGENTIC_ENDPOINT_BASE = "https://container-hackathon-sk.salmonpebble-59bd07ab.eastus.azurecontainerapps.io/api/iGenticAutonomousAgent/Executor"
+  const IGENTIC_URL = `${IGENTIC_ENDPOINT_BASE}/${AGENT_ID}`
+
+  const IGENTIC_HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer YOUR_IGENTIC_TOKEN"
   }
 
-  const processQuery = (query) => {
-    const lowerQuery = query.toLowerCase()
-
-    // Search for specific item
-    const itemMatch = inventoryData.find(item =>
-      item.name.toLowerCase().includes(lowerQuery)
-    )
-
-    if (itemMatch) {
-      const status = getStockStatus(itemMatch)
-      return `${itemMatch.name} is currently ${status}. Quantity: ${itemMatch.quantity} units. Category: ${itemMatch.category}. Threshold: ${itemMatch.threshold} units.`
-    }
-
-    // Check for category queries
-    const categories = ['pain relief', 'antibiotics', 'diabetes', 'first aid', 'medical supplies', 'medical equipment']
-    const categoryMatch = categories.find(cat => lowerQuery.includes(cat))
-
-    if (categoryMatch) {
-      const categoryItems = inventoryData.filter(item =>
-        item.category.toLowerCase().includes(categoryMatch)
-      )
-      if (categoryItems.length > 0) {
-        const itemsList = categoryItems.map(item =>
-          `${item.name} (${item.quantity} units, ${getStockStatus(item)})`
-        ).join(', ')
-        return `Items in ${categoryMatch}: ${itemsList}`
-      }
-    }
-
-    // Check for stock status queries
-    if (lowerQuery.includes('out of stock') || lowerQuery.includes('out-of-stock')) {
-      const outOfStock = inventoryData.filter(item => item.quantity === 0)
-      if (outOfStock.length > 0) {
-        return `Out of stock items: ${outOfStock.map(item => item.name).join(', ')}`
-      }
-      return 'All items are currently in stock!'
-    }
-
-    if (lowerQuery.includes('low stock') || lowerQuery.includes('low-stock')) {
-      const lowStock = inventoryData.filter(item => item.quantity > 0 && item.quantity <= item.threshold)
-      if (lowStock.length > 0) {
-        return `Low stock items: ${lowStock.map(item => `${item.name} (${item.quantity} units)`).join(', ')}`
-      }
-      return 'No items are currently low in stock.'
-    }
-
-    // General inventory query
-    if (lowerQuery.includes('total') || lowerQuery.includes('how many') || lowerQuery.includes('count')) {
-      const totalItems = inventoryData.length
-      const inStock = inventoryData.filter(item => item.quantity > item.threshold).length
-      const lowStock = inventoryData.filter(item => item.quantity > 0 && item.quantity <= item.threshold).length
-      const outOfStock = inventoryData.filter(item => item.quantity === 0).length
-      return `Total items: ${totalItems}. In stock: ${inStock}, Low stock: ${lowStock}, Out of stock: ${outOfStock}`
-    }
-
-    // Default response
-    return "I can help you with:\n- Searching for specific items (e.g., 'Paracetamol')\n- Checking stock status (e.g., 'low stock items')\n- Category information (e.g., 'pain relief items')\n- General inventory statistics\n\nTry asking me something specific!"
-  }
-
-  const handleSendMessage = async (text = inputText) => {
-    if (!text.trim() || isProcessing) return
+  const sendToAgent = async (text) => {
+    setIsProcessing(true)
+    setAgentError(null)
 
     const userMessage = {
       id: messages.length + 1,
-      text: text,
+      text,
       sender: 'user',
       timestamp: new Date()
     }
-
     setMessages(prev => [...prev, userMessage])
-    setInputText('')
-    setIsProcessing(true)
 
-    // Simulate processing delay
-    setTimeout(() => {
-      const botResponse = {
+    const payload = {
+      UserInput: JSON.stringify({ prompt: text }),
+      sessionId: localStorage.getItem("igentic_chat_session") || "",
+      executionId: crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString() + Math.random().toString()),
+      connectionID: "react-chatbot",
+      isImage: false,
+      base64string: "",
+      evalId: "",
+      userInputType: "text"
+    }
+
+    try {
+      const res = await fetch(IGENTIC_URL, {
+        method: 'POST',
+        headers: IGENTIC_HEADERS,
+        body: JSON.stringify(payload)
+      })
+
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(`iGentic API error: ${res.status} ${txt}`)
+      }
+
+      const data = await res.json()
+      if (data.session_id) localStorage.setItem("igentic_chat_session", data.session_id)
+
+      const botMessage = {
         id: messages.length + 2,
-        text: processQuery(text),
+        text: data.result || JSON.stringify(data, null, 2),
         sender: 'bot',
         timestamp: new Date()
       }
-      setMessages(prev => [...prev, botResponse])
+
+      setMessages(prev => [...prev, botMessage])
+    } catch (err) {
+      console.error(err)
+      setAgentError(err.message || String(err))
+      const botMessage = {
+        id: messages.length + 2,
+        text: `Error: ${err.message || "Something went wrong with the agent."}`,
+        sender: 'bot',
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, botMessage])
+    } finally {
       setIsProcessing(false)
-    }, 500)
+    }
   }
 
+  const handleSendMessage = (text = inputText) => {
+    if (!text.trim() || isProcessing) return
+    setInputText('')
+    sendToAgent(text)
+  }
+
+  // -------------------------
+  // Voice input (same as before)
+  // -------------------------
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -140,18 +118,11 @@ function Chatbot() {
         const transcript = event.results[0][0].transcript
         setInputText(transcript)
         setIsListening(false)
-        setTimeout(() => {
-          handleSendMessage(transcript)
-        }, 100)
+        setTimeout(() => handleSendMessage(transcript), 100)
       }
 
-      recognitionRef.current.onerror = () => {
-        setIsListening(false)
-      }
-
-      recognitionRef.current.onend = () => {
-        setIsListening(false)
-      }
+      recognitionRef.current.onerror = () => setIsListening(false)
+      recognitionRef.current.onend = () => setIsListening(false)
     }
   }, [])
 
@@ -160,14 +131,9 @@ function Chatbot() {
       alert('Speech recognition is not supported in your browser.')
       return
     }
-
-    if (isListening) {
-      recognitionRef.current.stop()
-      setIsListening(false)
-    } else {
-      recognitionRef.current.start()
-      setIsListening(true)
-    }
+    if (isListening) recognitionRef.current.stop()
+    else recognitionRef.current.start()
+    setIsListening(!isListening)
   }
 
   const handleKeyPress = (e) => {
@@ -186,9 +152,7 @@ function Chatbot() {
 
   const handleQuickQuestion = (question) => {
     setInputText(question)
-    setTimeout(() => {
-      handleSendMessage(question)
-    }, 100)
+    setTimeout(() => handleSendMessage(question), 100)
   }
 
   return (
@@ -216,10 +180,11 @@ function Chatbot() {
           handleSendMessage={handleSendMessage}
           isProcessing={isProcessing}
         />
+
+        {agentError && <div className="agent-error">Agent Error: {agentError}</div>}
       </div>
     </div>
   )
 }
 
 export default Chatbot
-
