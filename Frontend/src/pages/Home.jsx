@@ -1,30 +1,13 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import './Home.css'
 import HeroSection from '../components/HeroSection'
 import SearchBar from '../components/SearchBar'
 import FilterSection from '../components/FilterSection'
 import InventoryGrid from '../components/InventoryGrid'
 
-const initialInventory = [
-  { id: 1, name: 'Paracetamol 500mg', category: 'Pain Relief', quantity: 150, threshold: 50 },
-  { id: 2, name: 'Ibuprofen 400mg', category: 'Pain Relief', quantity: 25, threshold: 50 },
-  { id: 3, name: 'Amoxicillin 250mg', category: 'Antibiotics', quantity: 0, threshold: 30 },
-  { id: 4, name: 'Aspirin 100mg', category: 'Pain Relief', quantity: 200, threshold: 50 },
-  { id: 5, name: 'Insulin Vial', category: 'Diabetes', quantity: 45, threshold: 40 },
-  { id: 6, name: 'Bandages', category: 'First Aid', quantity: 300, threshold: 100 },
-  { id: 7, name: 'Gauze Pads', category: 'First Aid', quantity: 15, threshold: 50 },
-  { id: 8, name: 'Antiseptic Solution', category: 'First Aid', quantity: 80, threshold: 50 },
-  { id: 9, name: 'Metformin 500mg', category: 'Diabetes', quantity: 120, threshold: 50 },
-  { id: 10, name: 'Ciprofloxacin 500mg', category: 'Antibiotics', quantity: 60, threshold: 50 },
-  { id: 11, name: 'Syringes 5ml', category: 'Medical Supplies', quantity: 200, threshold: 100 },
-  { id: 12, name: 'Gloves (Box)', category: 'Medical Supplies', quantity: 35, threshold: 50 },
-  { id: 13, name: 'Face Masks (Box)', category: 'Medical Supplies', quantity: 500, threshold: 200 },
-  { id: 14, name: 'Thermometer', category: 'Medical Equipment', quantity: 8, threshold: 10 },
-  { id: 15, name: 'Blood Pressure Monitor', category: 'Medical Equipment', quantity: 12, threshold: 10 },
-]
-
 function Home() {
-  const [inventory, setInventory] = useState(initialInventory)
+  const [inventory, setInventory] = useState([])
+  const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedStockStatus, setSelectedStockStatus] = useState('All')
   const [sortBy, setSortBy] = useState('name')
@@ -41,6 +24,29 @@ function Home() {
     if (item.quantity <= item.threshold) return 'low-stock'
     return 'in-stock'
   }
+
+  // Fetch real inventory data from backend API
+  useEffect(() => {
+    fetch("http://127.0.0.1:8080/api/inventory") // Replace with your API port
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          const formatted = data.items.map(item => ({
+            id: item.inventory_id,
+            name: item.item_name,
+            category: item.item_type,
+            quantity: item.initial_stock || 0,
+            threshold: item.minimum_required || 0
+          }))
+          setInventory(formatted)
+        }
+        setLoading(false)
+      })
+      .catch(err => {
+        console.error("Error fetching inventory:", err)
+        setLoading(false)
+      })
+  }, [])
 
   const filteredAndSortedInventory = useMemo(() => {
     let filtered = inventory.filter(item => {
@@ -84,6 +90,10 @@ function Home() {
     outOfStock: inventory.filter(item => getStockStatus(item) === 'out-of-stock').length
   }
 
+  if (loading) {
+    return <div className="loading">Loading inventory...</div>
+  }
+
   return (
     <div className="home-page">
       <HeroSection stats={stats} />
@@ -110,5 +120,3 @@ function Home() {
 }
 
 export default Home
-
-
