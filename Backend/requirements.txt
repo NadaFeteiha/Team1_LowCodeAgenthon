@@ -1,0 +1,19 @@
+# Backend Python dependencies for Medical Inventory Management System
+# Use a virtual environment (python3 -m venv venv) before installing.
+
+flask
+flask-cors
+psycopg2-binary
+pandas
+fastmcp
+sentence-transformers
+numpy
+xgboost
+scikit-learn
+joblib
+jupyter
+torch
+python-dotenv
+gunicorn
+requests
+tqdm
