@@ -122,6 +122,7 @@ Development tips
 - To run backend APIs locally: activate the Backend virtualenv and run `python3 app.py`.
 - To retrain the demand model, open the Jupyter notebook in `Backend/xgboostmodel/`.
 - For semantic search troubleshooting, check the embeddings file (if created) and the `semantic_search/` scripts.
+- Test queries in Test_queries.docx
 
 Future enhancements
 -------------------
