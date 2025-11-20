@@ -1,10 +1,12 @@
-import { Bar, Pie } from "react-chartjs-2";
+import { Bar, Pie, Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
   BarElement,
   ArcElement,
+  PointElement,
+  LineElement,
   Title,
   Tooltip,
   Legend
@@ -16,6 +18,8 @@ ChartJS.register(
   LinearScale,
   BarElement,
   ArcElement,
+  PointElement,
+  LineElement,
   Title,
   Tooltip,
   Legend
@@ -26,6 +30,9 @@ export default function ItemForecastModal({ item, parsed, onClose }) {
 
   const { currentStock, reorderLevel, lowStock, actions } = parsed;
 
+  // ---------------------------
+  // Bar Chart: Stock vs Reorder
+  // ---------------------------
   const stockBarData = {
     labels: ["Stock", "Reorder Level"],
     datasets: [
@@ -39,12 +46,34 @@ export default function ItemForecastModal({ item, parsed, onClose }) {
     ]
   };
 
+  // ---------------------------
+  // Pie Chart: Threshold Status
+  // ---------------------------
   const thresholdPieData = {
     labels: ["Stock OK", "Low Stock"],
     datasets: [
       {
         data: lowStock ? [0, 1] : [1, 0],
         backgroundColor: ["rgba(16,185,129,0.6)", "rgba(239,68,68,0.6)"]
+      }
+    ]
+  };
+
+  // ---------------------------
+  // Line Chart: Stock Trend (Example Data)
+  // ---------------------------
+  const stockTrendData = {
+    labels: ["Week 1", "Week 2", "Week 3", "Week 4"],
+    datasets: [
+      {
+        label: "Stock Level",
+        data: [currentStock, currentStock - 2, currentStock - 5, reorderLevel],
+        borderColor: "rgba(16,185,129,0.8)",
+        backgroundColor: "rgba(16,185,129,0.3)",
+        fill: true,
+        tension: 0.4,
+        pointRadius: 5,
+        pointHoverRadius: 7
       }
     ]
   };
@@ -74,6 +103,12 @@ export default function ItemForecastModal({ item, parsed, onClose }) {
         <div className="chart-container">
           <h4>Threshold Status</h4>
           <Pie data={thresholdPieData} />
+        </div>
+
+        {/* Line */}
+        <div className="chart-container">
+          <h4>Stock Trend (Last 4 Weeks)</h4>
+          <Line data={stockTrendData} />
         </div>
 
         {/* Actions */}
