@@ -4,7 +4,7 @@
 **Team:** Team 1 - Supply Soul  
 **Contributors:** Megha Narendra Simha, Poorrnima Vetrivelan, Nada Feteiha
 
-This system helps healthcare facilities efficiently manage medication and supply inventory, forecast demand using **XGBoost**, and automate restocking. It leverages AI agents, a Flask backend, PostgreSQL database, and a React frontend with visualizations.
+This system helps healthcare facilities efficiently manage medication and supply inventory, forecast demand using machine learning embeddings and semantic search, and automate restocking. It leverages AI agents, a Flask backend, PostgreSQL database, and a React frontend with visualizations.
 
 ---
 
@@ -21,7 +21,7 @@ This system helps healthcare facilities efficiently manage medication and supply
 - **Backend (Python - Flask / FastAPI):** MCP orchestrator, API endpoints, semantic search using embeddings, orchestration of Stock, Demand, and Reorder agents.
 - **AI Agents:**
   1. **Stock Level Monitor:** Tracks inventory, generates low-stock alerts, summarizes inventory in CSV and charts.
-  2. **Demand Forecaster:** Uses **XGBoost** for demand prediction; analyzes historical trends and seasonal patterns.
+- **Demand Forecaster:** Analyzes historical consumption trends and seasonal patterns; generates time-series forecasts.
   3. **Reorder Automator:** Generates purchase orders based on low-stock and forecast, supports human approval, updates inventory and order tracking.
 - **Database (PostgreSQL):** Stores historical consumption, stock, vendor data; tables include `inventory_master`, `consumption`, `finance`, `vendor_master`, `inventory_department_mapping`.
 ## Medical Inventory Management System
@@ -38,7 +38,7 @@ Overview
 --------
 This repository implements an inventory management system for healthcare facilities. It provides:
 - real-time stock tracking and low-stock alerts
-- demand forecasting using XGBoost
+- demand forecasting using historical trend analysis and semantic search
 - automated purchase-order generation with human-in-the-loop approval
 - a React dashboard for visualization
 
@@ -46,7 +46,7 @@ Architecture
 ------------
 - Frontend: React (in `Frontend/`) — dashboard, charts, approval UI
 - Backend: Python Flask (in `Backend/`) — API, MCP orchestration, semantic search
-- AI: XGBoost demand forecaster, sentence-transformer embeddings for semantic search
+- AI: Demand forecaster with semantic search, sentence-transformer embeddings for inventory resolution
 - Database: PostgreSQL (schema files at repo root)
 
 Requirements
@@ -79,29 +79,25 @@ pip install fastmcp
 psql -U <db_user> -d <db_name> -f ../schema_only.sql
 psql -U <db_user> -d <db_name> -f ../full_dump.sql
 
-# 4. Train XGBoost model (optional) or use pre-trained model files
-# Notebook included at Backend/xgboostmodel/demand_forecast.ipynb
-jupyter notebook ../Backend/xgboostmodel/demand_forecast.ipynb
-
-# 5. Generate sentence-transformer embeddings for semantic search
+# 4. Generate sentence-transformer embeddings for semantic search
 python3 semantic_search/vectorembedding.py
 
-# 6. Start MCP orchestration (if applicable)
+# 5. Start MCP orchestration (if applicable)
 python3 semantic_search/combine_mcp_demand_stock_withss.py
 
-# 7. (Optional) expose local backend with ngrok
+# 6. (Optional) expose local backend with ngrok
 # install ngrok separately and run:
 ngrok http 8000
 
-# 8. Start Flask backend (adjust port or env vars as needed)
+# 7. Start Flask backend (adjust port or env vars as needed)
 python3 app.py
 
-# 9. Frontend: open a new terminal, install and run dev server
+# 8. Frontend: open a new terminal, install and run dev server
 cd ../Frontend
 npm install
 npm run dev
 
-# 10. Visit the app in your browser (default Vite port is 5173)
+# 9. Visit the app in your browser (default Vite port is 5173)
 echo "Frontend running at http://localhost:5173"
 
 ```
@@ -111,7 +107,6 @@ Notes
 - File locations in this repo:
   - Backend code: `Backend/` (contains `app.py`, API modules, `semantic_search/`)
   - Frontend app: `Frontend/` (Vite + React)
-  - Model notebooks: `Backend/xgboostmodel/`
   - DB schema & dumps: `schema_only.sql`, `full_dump.sql` (repo root)
 
 - If you run into missing package errors, activate the virtualenv (`source Backend/venv/bin/activate`) and install the missing package with `pip install <pkg>`.
@@ -120,7 +115,7 @@ Notes
 Development tips
 ----------------
 - To run backend APIs locally: activate the Backend virtualenv and run `python3 app.py`.
-- To retrain the demand model, open the Jupyter notebook in `Backend/xgboostmodel/`.
+- Demand forecasting uses historical consumption data for pattern analysis.
 - For semantic search troubleshooting, check the embeddings file (if created) and the `semantic_search/` scripts.
 - Test queries in Test_queries.docx
 
