@@ -14,6 +14,16 @@ import re
 import uuid
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+import os
+import pickle
+import base64
+
 
 # ----------------------------
 # Initialize MCP
@@ -274,6 +284,33 @@ def fetch_inventory_data(inventory_id: str):
 
 @mcp.tool
 def predict_demand(inventory_id_or_name: str):
+    """
+    Predicts future demand and stock consumption for a specified inventory item.
+    
+    This tool performs intelligent inventory resolution using multiple matching strategies:
+    1. Exact Inventory ID match
+    2. Exact item name match (historical or master data)
+    3. Semantic search using embeddings
+    4. Fuzzy name matching with token-sort ratio
+    
+    Args:
+        inventory_id_or_name (str): Inventory ID or item name to predict demand for.
+                                   Can include time period specification (e.g., "Item 5 days")
+    
+    Returns:
+        list: List of forecast dictionaries containing:
+            - Date (str): Predicted date in YYYY-MM-DD format
+            - Inventory_ID (str): The resolved inventory ID
+            - Predicted_Consumption (float): Forecasted consumption amount
+            - Available_Stock (float): Projected available stock after consumption
+            - Stock_Warning (bool): Whether stock will fall below minimum threshold
+            - Search_Method (str): Method used to resolve the inventory item
+            - error (str, optional): Error message if inventory not found
+    
+    Example:
+        >>> predict_demand("Syringes 10 days")
+        >>> predict_demand("INV-001")
+    """
     periods = extract_periods_from_query(inventory_id_or_name, default=7)
 
     # -----------------------------
@@ -324,6 +361,35 @@ def predict_demand(inventory_id_or_name: str):
 
 @mcp.tool
 def check_stock(inventory_id_or_name: str):
+    """
+    Retrieves comprehensive stock status and consumption forecast for an inventory item.
+    
+    This tool provides a complete snapshot of an inventory item including:
+    - Current stock levels and minimum thresholds
+    - Historical consumption patterns (past 7 days)
+    - Predicted consumption for the next 7 days
+    - Stock warning indicators
+    - Vendor and department mapping information
+    
+    Args:
+        inventory_id_or_name (str): Inventory ID or item name to check stock for.
+    
+    Returns:
+        dict: Stock status dictionary containing:
+            - Inventory_ID (str): The resolved inventory ID
+            - Item_Name (str): Name of the inventory item
+            - Closing_Stock (float): Current available stock quantity
+            - Min_Stock_Limit (float): Minimum threshold for stock replenishment
+            - Stock_Warning (bool): Warning flag if current stock < minimum limit
+            - Search_Method (str): Method used to resolve the inventory item
+            - Last_Consumption_7_Days (list): Historical consumption records
+            - Predicted_Consumption_7_Days (list): 7-day demand forecast
+            - error (str, optional): Error message if inventory not found
+    
+    Example:
+        >>> check_stock("Bandages")
+        >>> check_stock("INV-042")
+    """
     if not inventory_id_or_name:
         return {"Inventory_ID": None,
                 "Item_Name": None,
@@ -545,8 +611,94 @@ def forecast_item(item_id: str, periods: int = 7, method: str = "Unknown"):
     
 
 # ----------------------------
+# Gmail OAuth Send Email Tool
+# ----------------------------
+SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+CLIENT_SECRET_FILE = "client_secret.json"  # <-- your Google credentials
+TOKEN_FILE = "token.pickle"
+
+def authenticate_gmail():
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "rb") as t:
+            creds = pickle.load(t)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(TOKEN_FILE, "wb") as t:
+            pickle.dump(creds, t)
+    return creds
+
+def send_email_oauth(recipient: str, subject: str, body: str):
+    service = build("gmail", "v1", credentials=authenticate_gmail())
+    msg = MIMEMultipart()
+    msg["to"] = recipient
+    msg["subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+    raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service.users().messages().send(userId="me", body={"raw": raw_msg}).execute()
+    return True
+
+@mcp.tool
+def send_email(recipient: str, subject: str, body: str):
+    """
+    Sends email notifications using Gmail OAuth authentication.
+    
+    This tool enables the agent to send alerts and reports via email. It uses OAuth2
+    for secure Gmail authentication, requiring valid Google credentials setup.
+    
+    Prerequisites:
+        - Google API credentials file (client_secret.json)
+        - First-time authentication creates token.pickle for subsequent uses
+        - Gmail API must be enabled in Google Cloud Console
+    
+    Args:
+        recipient (str): Email address of the recipient
+        subject (str): Email subject line
+        body (str): Plain text email body content
+    
+    Returns:
+        dict: Operation status containing:
+            - status (str): Either "success", "failed", or "error"
+            - message (str): Success message with recipient email
+            - error (str, optional): Error description if operation failed
+    
+    Use Cases:
+        - Alert when stock falls below minimum threshold
+        - Send daily/weekly inventory reports
+        - Notify about items requiring urgent restocking
+        - Schedule demand forecast notifications
+    
+    Example:
+        >>> send_email("manager@hospital.com", "Low Stock Alert", "Syringes stock critically low")
+    """
+    try:
+        if not recipient or not subject or not body:
+            return {"status": "error", "error": "Recipient, subject, or body missing"}
+        
+        # Send via Gmail OAuth
+        ok = send_email_oauth(recipient, subject, body)
+        if ok:
+            return {"status": "success", "message": f"Email sent to {recipient}"}
+        else:
+            return {"status": "failed", "message": "Unknown failure"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# ----------------------------
+# MCP Server Run
+# ----------------------------
+if __name__ == "__main__":
+    print("🚀 Inventory & Demand MCP running on port 8000 (SSE enabled)")
+    mcp.run(transport="sse", port=8000)
+# ----------------------------
 # Run MCP
 # ----------------------------
 if __name__ == "__main__":
     print("🚀 Inventory & Demand MCP running on port 8000...")
     mcp.run(transport="sse", port=8000)
+

@@ -1,19 +1,25 @@
 # Backend Python dependencies for Medical Inventory Management System
 # Use a virtual environment (python3 -m venv venv) before installing.
 
-flask
-flask-cors
-psycopg2-binary
-pandas
-fastmcp
-sentence-transformers
-numpy
-xgboost
-scikit-learn
-joblib
-jupyter
-torch
-python-dotenv
-gunicorn
-requests
-tqdm
+flask>=2.0.0
+flask-cors>=3.0.10
+psycopg2-binary>=2.9.0
+pandas>=1.3.0
+fastmcp>=0.1.0
+sentence-transformers>=2.2.0
+numpy>=1.21.0
+xgboost>=1.5.0
+scikit-learn>=1.0.0
+joblib>=1.1.0
+jupyter>=1.0.0
+torch>=1.10.0
+python-dotenv>=0.19.0
+gunicorn>=20.1.0
+requests>=2.26.0
+tqdm>=4.62.0
+thefuzz>=0.19.0
+python-Levenshtein>=0.12.0
+google-auth-oauthlib>=0.6.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.0.0
+python-pickle>=1.0.0
